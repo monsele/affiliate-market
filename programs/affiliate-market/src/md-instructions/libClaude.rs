@@ -1,9 +1,9 @@
-
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
     token::{self, Mint, Token, TokenAccount, MintTo},
 };
+
 use mpl_token_metadata::instructions::{
     CreateMetadataAccountV3Cpi, CreateMetadataAccountV3CpiAccounts, CreateMetadataAccountV3InstructionArgs,
     CreateMasterEditionV3Cpi, CreateMasterEditionV3CpiAccounts, CreateMasterEditionV3InstructionArgs,
@@ -13,101 +13,38 @@ use mpl_token_metadata::types::DataV2;
 use mpl_token_metadata::ID as MPL_TOKEN_METADATA_ID;
 use anchor_lang::solana_program::{program::invoke_signed, program::invoke, system_instruction};
 
-use crate::state::{AffiliateStats, Campaign};
-use crate::error::ErrorCode;
+declare_id!("6jxp4eoRZ8C7qVeXKyHk68YEmCoBVHR1AQxJ9Le4Aey1");
 
+#[program]
+pub mod secure_affiliate_candy {
+    use super::*;
 
+    /// Creator creates campaign, storing collection_mint and bump info.
+    pub fn create_campaign(
+        ctx: Context<CreateCampaign>,
+        price: u64,
+        affiliate_fee_bps: u16,
+        max_supply: u64,
+    ) -> Result<()> {
+        require!(affiliate_fee_bps <= 10000, ErrorCode::InvalidFee);
 
+        let campaign = &mut ctx.accounts.campaign;
+        campaign.creator = ctx.accounts.creator.key();
+        campaign.collection_mint = ctx.accounts.collection_mint.key();
+        campaign.price = price;
+        campaign.affiliate_fee_bps = affiliate_fee_bps;
+        campaign.minted = 0;
+        campaign.max_supply = max_supply;
 
-#[derive(Accounts)]
-#[instruction(affiliate_maybe: Option<Pubkey>, name: String, symbol: String, uri: String)]
-pub struct ProcessMint<'info> {
-    #[account(mut)]
-    pub buyer: Signer<'info>,
+        // store bumps from ctx.bumps (dot access)
+        campaign.mint_authority_bump = ctx.bumps.mint_authority;
+        campaign.collection_auth_bump = ctx.bumps.collection_authority;
 
-    #[account(mut, has_one = collection_mint)]
-    pub campaign: Account<'info, Campaign>,
+        Ok(())
+    }
 
-    /// CHECK: Creator account verified via campaign.creator constraint
-    #[account(mut, address = campaign.creator)]
-    pub creator: UncheckedAccount<'info>,
-
-    /// CHECK: Affiliate receiver account - can be any account
-    #[account(mut)]
-    pub affiliate_receiver: UncheckedAccount<'info>,
-
-    /// NFT mint PDA - initialized by Anchor
-    #[account(
-        init,
-        payer = buyer,
-        mint::decimals = 0,
-        mint::authority = mint_authority,
-        seeds = [b"nft_mint", campaign.key().as_ref(), &campaign.minted.to_le_bytes()],
-        bump
-    )]
-    pub nft_mint: Account<'info, Mint>,
-
-    /// Buyer's associated token account
-    #[account(
-        init_if_needed,
-        payer = buyer,
-        associated_token::mint = nft_mint,
-        associated_token::authority = buyer
-    )]
-    pub buyer_ata: Account<'info, TokenAccount>,
-
-    /// CHECK: Mint authority PDA - verified by seeds constraint
-    #[account(
-        seeds = [b"mint_auth", campaign.key().as_ref()],
-        bump = campaign.mint_authority_bump
-    )]
-    pub mint_authority: UncheckedAccount<'info>,
-
-    /// CHECK: Metadata account will be created by Metaplex CPI
-    #[account(mut)]
-    pub metadata: UncheckedAccount<'info>,
-
-    /// CHECK: Master edition account will be created by Metaplex CPI
-    #[account(mut)]
-    pub master_edition: UncheckedAccount<'info>,
-
-    /// CHECK: Collection mint - verified via campaign constraint
-    pub collection_mint: UncheckedAccount<'info>,
-    
-    /// CHECK: Collection metadata account
-    #[account(mut)]
-    pub collection_metadata: UncheckedAccount<'info>,
-    
-    /// CHECK: Collection master edition account
-    #[account(mut)]
-    pub collection_master_edition: UncheckedAccount<'info>,
-
-    /// CHECK: Collection authority PDA - verified by seeds constraint
-    #[account(
-        seeds = [b"collection_auth", campaign.key().as_ref()],
-        bump = campaign.collection_auth_bump
-    )]
-    pub collection_authority: UncheckedAccount<'info>,
-
-    /// Affiliate stats PDA
-    #[account(
-        init_if_needed,
-        payer = buyer,
-        space = 8 + AffiliateStats::SIZE,
-        seeds = [b"affiliate", campaign.key().as_ref(), affiliate_receiver.key().as_ref()],
-        bump
-    )]
-    pub affiliate_stats: Account<'info, AffiliateStats>,
-
-    pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-    /// CHECK: Metaplex token metadata program
-    pub token_metadata_program: UncheckedAccount<'info>,
-    pub system_program: Program<'info, System>,
-    pub rent: Sysvar<'info, Rent>,
-}
-
-pub fn process_mint_instruction(
+    /// Buyer mints an NFT for a campaign with optional affiliate
+    pub fn process_mint(
         ctx: Context<ProcessMint>, 
         affiliate_maybe: Option<Pubkey>, 
         name: String, 
@@ -261,4 +198,176 @@ pub fn process_mint_instruction(
 
         Ok(())
     }
+}
 
+
+#[derive(Accounts)]
+#[instruction(price: u64, affiliate_fee_bps: u16, max_supply: u64)]
+pub struct CreateCampaign<'info> {
+    #[account(mut)]
+    pub creator: Signer<'info>,
+
+    #[account(
+        init,
+        payer = creator,
+        space = 8 + Campaign::SIZE,
+        seeds = [b"campaign", collection_mint.key().as_ref()],
+        bump
+    )]
+    pub campaign: Account<'info, Campaign>,
+
+    /// CHECK: Collection mint created externally by creator
+    pub collection_mint: UncheckedAccount<'info>,
+
+    /// CHECK: Collection authority PDA - program-controlled authority
+    #[account(
+        mut,
+        seeds = [b"collection_auth", campaign.key().as_ref()],
+        bump
+    )]
+    pub collection_authority: UncheckedAccount<'info>,
+
+    /// CHECK: Mint authority PDA - program-controlled authority  
+    #[account(
+        mut,
+        seeds = [b"mint_auth", campaign.key().as_ref()],
+        bump
+    )]
+    pub mint_authority: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+
+#[derive(Accounts)]
+#[instruction(affiliate_maybe: Option<Pubkey>, name: String, symbol: String, uri: String)]
+pub struct ProcessMint<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+
+    #[account(mut, has_one = collection_mint)]
+    pub campaign: Account<'info, Campaign>,
+
+    /// CHECK: Creator account verified via campaign.creator constraint
+    #[account(mut, address = campaign.creator)]
+    pub creator: UncheckedAccount<'info>,
+
+    /// CHECK: Affiliate receiver account - can be any account
+    #[account(mut)]
+    pub affiliate_receiver: UncheckedAccount<'info>,
+
+    /// NFT mint PDA - initialized by Anchor
+    #[account(
+        init,
+        payer = buyer,
+        mint::decimals = 0,
+        mint::authority = mint_authority,
+        seeds = [b"nft_mint", campaign.key().as_ref(), &campaign.minted.to_le_bytes()],
+        bump
+    )]
+    pub nft_mint: Account<'info, Mint>,
+
+    /// Buyer's associated token account
+    #[account(
+        init_if_needed,
+        payer = buyer,
+        associated_token::mint = nft_mint,
+        associated_token::authority = buyer
+    )]
+    pub buyer_ata: Account<'info, TokenAccount>,
+
+    /// CHECK: Mint authority PDA - verified by seeds constraint
+    #[account(
+        seeds = [b"mint_auth", campaign.key().as_ref()],
+        bump = campaign.mint_authority_bump
+    )]
+    pub mint_authority: UncheckedAccount<'info>,
+
+    /// CHECK: Metadata account will be created by Metaplex CPI
+    #[account(mut)]
+    pub metadata: UncheckedAccount<'info>,
+
+    /// CHECK: Master edition account will be created by Metaplex CPI
+    #[account(mut)]
+    pub master_edition: UncheckedAccount<'info>,
+
+    /// CHECK: Collection mint - verified via campaign constraint
+    pub collection_mint: UncheckedAccount<'info>,
+    
+    /// CHECK: Collection metadata account
+    #[account(mut)]
+    pub collection_metadata: UncheckedAccount<'info>,
+    
+    /// CHECK: Collection master edition account
+    #[account(mut)]
+    pub collection_master_edition: UncheckedAccount<'info>,
+
+    /// CHECK: Collection authority PDA - verified by seeds constraint
+    #[account(
+        seeds = [b"collection_auth", campaign.key().as_ref()],
+        bump = campaign.collection_auth_bump
+    )]
+    pub collection_authority: UncheckedAccount<'info>,
+
+    /// Affiliate stats PDA
+    #[account(
+        init_if_needed,
+        payer = buyer,
+        space = 8 + AffiliateStats::SIZE,
+        seeds = [b"affiliate", campaign.key().as_ref(), affiliate_receiver.key().as_ref()],
+        bump
+    )]
+    pub affiliate_stats: Account<'info, AffiliateStats>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    /// CHECK: Metaplex token metadata program
+    pub token_metadata_program: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[account]
+pub struct Campaign {
+    pub creator: Pubkey,
+    pub collection_mint: Pubkey,
+    pub price: u64,
+    pub affiliate_fee_bps: u16,
+    pub minted: u64,
+    pub max_supply: u64,
+    pub mint_authority_bump: u8,
+    pub collection_auth_bump: u8,
+}
+
+impl Campaign {
+    pub const SIZE: usize = 32 + 32 + 8 + 2 + 8 + 8 + 1 + 1; // 92 bytes
+}
+
+#[account]
+pub struct AffiliateStats {
+    pub total_mints: u64,
+    pub total_earned: u64,
+}
+
+impl AffiliateStats {
+    pub const SIZE: usize = 8 + 8; // 16 bytes
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Invalid affiliate fee (0..=10000 bps)")]
+    InvalidFee,
+    #[msg("Sold out")]
+    SoldOut,
+    #[msg("Math overflow")]
+    MathOverflow,
+    #[msg("Invalid mint account (PDA mismatch)")]
+    InvalidMintAccount,
+    #[msg("Invalid metadata PDA")]
+    InvalidMetadata,
+    #[msg("Invalid master edition PDA")]
+    InvalidMasterEdition,
+    #[msg("Invalid collection metadata")]
+    InvalidCollectionMetadata,
+}
